@@ -22,7 +22,7 @@ This would be the steps to follow.
                 * run your package manager commands: 
                                         
                         $ pacman -S git 
-                        $ pt-get install git 
+                        $ apt-get install git 
                         ... see your package manager documentation.
                                             
                                             
