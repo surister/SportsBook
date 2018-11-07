@@ -19,6 +19,7 @@ def tennis():
 
 options = [[1, "Football", football_menu], [2, "Tennis", tennis], ["Q", "Quit"]]
 
+
 def main_menu(options):
     """
     Main menu function

@@ -42,7 +42,8 @@ def display_fixtures(fixtures):
             print(fixture[detail] + " ", end = " ")
         print("")
     return 0
-    
+
+
 def display_predictions(predictions):
     """
     Takes in the current list of predictions generated via game analysis options.
