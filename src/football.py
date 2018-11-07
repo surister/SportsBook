@@ -1,7 +1,10 @@
 import commonFunctions as cf
 import pandas as pd
 import scrapers as scrape
-
+from datetime import datetime
+from datetime import timedelta
+import threading
+import queue
 __author__ = "David Bristoll"
 __copyright__ = "Copyright 2018, David Bristoll"
 __maintainer__ = "David Bristoll"
@@ -81,8 +84,7 @@ def select_league(league_data, fixtures, data_source):
         if selected_leagues:
             selected_leagues = cf.remove_duplicates(selected_leagues)
             print("\nDownloading the requested data, please wait...")
-            for selection in selected_leagues:
-                gather_data = inform_and_scrape(selection, league_data, fixtures, available_leagues, data_source)
+            gather_data = inform_and_scrape(selected_leagues, league_data, fixtures, available_leagues, data_source)
         else:
             print("No leagues added.")
             
@@ -95,42 +97,112 @@ def select_league(league_data, fixtures, data_source):
             return
         else:
             return
-
-def inform_and_scrape(selection, league_data, fixtures, available_leagues, data_source):
+        
+def inform_and_scrape(selected_leagues, league_data, fixtures, available_leagues, data_source):
     """
-    Takes in the key value of a selected league.
-    Advised that downloading of that league is taking place.
-    Passes the league key to the get_league_data function for scraping.
+    Takes in:   the list of selected leagues
+                the current league_data dict.
+                the current fixtures list.
+                the available_leagues list.
+                the selected data_source string.
+                
+    Organises threads to scrape leagues concurrently.
+    Passes the league keys to the selected scraper.
+    New data is added to dictionary and list objects so no return is necessary.
+    Returns "Success" if successful.
     """
-    # Debug code: display the URL that will be used to obtain the league data
-    # print("This will use the following url: " + availableLeagues[selection] + "\n")
-    
-    # Select the appropriate function based on the selected data source.
+    threads_list = []
+    # Create queue object for queueing the leagues pre scrape
+    leaguesq = queue.Queue(maxsize = len(selected_leagues)) 
+    # The maximum number of threads to use
+    max_threads = 5
+    # Select the appropriate function based upone the selected data source
     if data_source == "Bet Study":
-        get_league_data_and_fixtures = scrape.get_league_data_bet_study(selection, league_data, fixtures, available_leagues)
+        scraper = scrape.get_league_data_bet_study
+        #(selection, league_data, fixtures, available_leagues)
     else:
-        get_league_data_and_fixtures = scrape.get_league_data_soccer_stats(selection, league_data, fixtures, available_leagues)
+        scraper = scrape.get_league_data_soccer_stats
+        #(selection, league_data, fixtures, available_leagues)
     
-    if get_league_data_and_fixtures == "Scrape error":
-        return
+    # Set up a function for each scrape 
+    def scraper_function(league, scraper, league_data, fixtures, available_leagues):
+        """
+        Takes in:   the name of the league to be scraped
+                    the scraper function to use
+                    the current league_data dictionary
+                    the current list of fixtures
+                    the available leagues dictionary
+                    the leaguedataq Queue object
+                    
+        Checks if the new league and fixture data is already present in the existing
+        league and data before queuing them to be added to the
+        """
+        data = scraper(league, league_data, fixtures, available_leagues)
+        #data = [new_league_data(dict), new_fixtures(list)
+        return data
+    
+    def threader(scraper, league_data, fixtures, available_leagues):
+        """
+        Used to organise threads and keep them working after each scrape.
+        Takes:  the selected scraper function
+                the league_data function
+                the fixtures list
+                the available leagues dictionary
+        """
+        # Keep working until the queue of leagues to scrape is empty.
+        while not leaguesq.empty():
+            # Take next league from list.
+            league = leaguesq.get()
+            # Use the selected scraper function to scrape data.
+            data = scraper_function(league, scraper, league_data, fixtures, available_leagues)
+            
+            if data == "Scrape error":
+                print("Scrape error with: " + selection)
+                print("Scrape error")
+                leaguesq.task_done()
+            else:  
+                print(league + " download complete.")
+                leaguesq.task_done()
+
+    # Prepare the queue of leagues to scrape
+    for league in selected_leagues:
+        leaguesq.put(league)
+    
+    # One thread per league unless there are more leagues than the max threads
+    if len(selected_leagues) < max_threads:
+        number_of_threads = len(selected_leagues)
     else:
-        print(selection + " download complete.")
+        number_of_threads = max_threads
     
-    #league_data_and_fixtures checked to contain a list of a dict
-    #(league data) and a list of lists of fixtures
-    return get_league_data_and_fixtures
+    # Initialise threads
+    for i in range(number_of_threads):
+        t = threading.Thread(target = threader, name = "thread " + str(i), args = (scraper, league_data, fixtures, available_leagues), daemon = True)
+        t.start()
+        #print(t.name + " started")
+        threads_list.append(t)
 
+    leaguesq.join()
+    # Ensure all threads have completed before continuing
+    for t in threads_list:
+        t.join()
+    return "Success"
 
-
-def get_league(t, league_data):
+def get_league(home_team, away_team, league_data):
     """
-    Takes in a team name as a string and the leagueData dictionary.
-    Returns the name of the league the team belongs to as a string.
+    Takes in a the home team name and the away team name as strings and the leagu_data dictionary.
+    Returns the name of the league each team belongs to as strings.
     """
     league_team_pairs = league_data.items()
-    for team in league_team_pairs:
-        if t in team[1]:
-            return team[0]
+    for i in range(len(league_team_pairs)):
+        for team in league_team_pairs:
+            if home_team in team[1]:
+                home_team_league = team[0]
+                if away_team in league_data[home_team_league]:
+                    return home_team_league, home_team_league # Both leagues intentionally the same.
+        for team in league_team_pairs:
+            if away_team in team[1]:
+                away_team_league = team[0]
+                return home_team_league, away_team_league
     print("Error: Team not found")
     return "Error: Team not found"
 
@@ -152,10 +224,10 @@ def compare(home_team, away_team, league_data):
     A solution would be to use dictionaries instead of lists. Bending my head now
     though, so probably my next task for another day.
     """
-    # Check what league the home team belongs to
-    home_league = get_league(home_team, league_data)
+    # Get the league each team belongs to.
+    home_league, away_league = get_league(home_team, away_team, league_data)
 
-    # Initialise the home team stats lists (one for home and one for total)
+    # Initialise the home team stats lists (one for home and one for total).
     home_team_home_stats = [home_team]
     home_team_total_stats = [home_team]
 
@@ -167,9 +239,6 @@ def compare(home_team, away_team, league_data):
                 home_team_home_stats.append(league_data[home_league][home_team][section][stat])
             if section == "Total":
                 home_team_total_stats.append(league_data[home_league][home_team][section][stat])
-
-    # Check what league the away team belongs to
-    away_league = get_league(away_team, league_data)
 
     # Initialise the away stats lists (one for away and one for total)
     away_team_away_stats = [away_team]
@@ -213,7 +282,7 @@ def compare(home_team, away_team, league_data):
 
 def list_teams(league_data):
     """
-    Takes the leagueData dictionary.
+    Takes the league_data dictionary.
     Returns a list of all teams within it.
     """
     team_list = []
@@ -222,16 +291,15 @@ def list_teams(league_data):
             team_list.append(team)
     return team_list
 
-
 def manual_game_analysis(league_data, predictions):
     """
-    Takes the leagueData dictionary.
+    Takes the league_data dictionary and current predictions.
     Asks the user to select the home and away teams from the available
     teams.
-    Provides a comparison and a comparison.
+    Provides a comparison.
     Returns the prediction as a list: [homeTeam, predictedHomeScore, awayTeam, predictedAwayScore]
     """
-
+    today = datetime.today()
     team_list = []
     selection1 = ""
     selection2 = ""
@@ -265,8 +333,7 @@ def manual_game_analysis(league_data, predictions):
 
     home_team = team_list[int(selection1)-1]
     away_team = team_list[int(selection2)-1]
-    home_team_league = get_league(home_team, league_data)
-    away_team_league = get_league(away_team, league_data)
+    home_team_league, away_team_league = get_league(home_team, away_team, league_data)
     
     if home_team_league == away_team_league:
         league = home_team_league
@@ -320,12 +387,13 @@ def manual_game_analysis(league_data, predictions):
     away_team_goals = int((league_data[away_team_league][away_team]["Away"]["For per Game"] * 1.25) * league_data[home_team_league][home_team]["Home"]["Against per Game"])
     
     if home_team_goals > home_team_max_goals:
-        home_team_goals = home_team_max_goals
+        home_team_goals = int(home_team_max_goals)
     
     if away_team_goals > away_team_max_goals:
-        away_team_goals = away_team_max_goals
+        away_team_goals = int(away_team_max_goals)
     
     prediction_goal_separation = abs(home_team_goals - away_team_goals)
+    total_goals = home_team_goals + away_team_goals
     
     if home_team_goals > 0 and away_team_goals > 0:
         both_to_score = "Yes"
@@ -336,18 +404,19 @@ def manual_game_analysis(league_data, predictions):
     prediction_description = "home_team_goals = int((home_team_avg_gpg_f * 1.25) * (away_team_avg_gpg_a) : away_team_goals = int((away_team_avg_gpg_f * 1.25) * (home_team_avg_gpg_a))"
     
     # Save current prediction as a list item        
-    prediction = {"League": league, "Date": "N/A", "Time": "N/A", "Prediction type": prediction_name, "Home team": home_team,
-    "Home team prediction": home_team_goals, "Away team": away_team, "Away team prediction": away_team_goals, 
-    "Predicted separation": prediction_goal_separation, "Both to score": both_to_score, "Home result": "",
-    "Away result": "", "Goal separation": "", "Both teams scored": ""}
+    prediction = {"League": league, "Date and time": "Manual entry: ", "Prediction type": prediction_name, "Home team": home_team,
+    "Home team prediction": home_team_goals, "Away team": away_team, "Away team prediction": away_team_goals, "Total goalsexpected": total_goals,
+    "Predicted separation": prediction_goal_separation, "Both to score": both_to_score,  "date_as_dtobject": today}
 
     # Flatten league stats for prediction storage and exporting
+    index = 0
     for team in [home_team, away_team]: # Do for each team
         if team == home_team:           # Used for the prediction keys
             h_a_stat_key = "Home Team"
         elif team == away_team:
             h_a_stat_key = "Away Team"
-        league = get_league(team, league_data) # Get the team's league
+        league = [home_team_league, away_team_league][index]
+        index += 1
         for section in ["Home", "Away", "Total"]: # Go through each set of stats
             for stat in league_data[league][team][section]: # Add each stat and a descriptive key to the prediction dictionary
                 prediction[h_a_stat_key + " " + section + " " + stat] = league_data[league][team][section][stat]
@@ -365,15 +434,14 @@ def manual_game_analysis(league_data, predictions):
 
 def upcoming_fixture_predictions(fixtures, predictions, league_data):
     """
-    Takes in the fixtures and predictions lists.
+    Takes in the fixtures and predictions lists and league_data dictionary.
     Runs predictions on all upcoming fixtures.
     Adds each prediction to the predictions list.
     Returns the updated predictions list.
-    """
-    
+    """ 
     for fixture in fixtures:
-        fixture_date = fixture[0]
-        fixture_time = fixture[1]
+        fixture_league = fixture[0]
+        fixture_datetime = fixture[1]
         home_team = fixture[2]
         away_team = fixture[3]
         #print("HOME TEAM: " + home_team + " AWAY TEAM: " + away_team) # DEBUG CODE
@@ -383,20 +451,12 @@ def upcoming_fixture_predictions(fixtures, predictions, league_data):
         comaprison return notes:
         [H/A compare[Pld,W,D,L,F,A,Pts], Total compare[Pld,W,D,L,F,A,Pts]]
         """
-        
-        home_team_league = get_league(home_team, league_data)
-        away_team_league = get_league(away_team, league_data)
-        
-        if home_team_league == away_team_league:
-            league = home_team_league
-        else:
-            league = "(mixed leagues)"
     
-        home_team_max_goals = league_data[home_team_league][home_team]["Home"]["For per Game"] * 2.5
-        away_team_max_goals = league_data[away_team_league][away_team]["Away"]["For per Game"] * 2.5
+        home_team_max_goals = league_data[fixture_league][home_team]["Home"]["For per Game"] * 2.5
+        away_team_max_goals = league_data[fixture_league][away_team]["Away"]["For per Game"] * 2.5
         
-        home_team_goals = int((league_data[home_team_league][home_team]["Home"]["For per Game"] * 1.25) * league_data[away_team_league][away_team]["Away"]["Against per Game"])
-        away_team_goals = int((league_data[away_team_league][away_team]["Away"]["For per Game"] * 1.25) * league_data[home_team_league][home_team]["Home"]["Against per Game"])
+        home_team_goals = int((league_data[fixture_league][home_team]["Home"]["For per Game"] * 1.25) * league_data[fixture_league][away_team]["Away"]["Against per Game"])
+        away_team_goals = int((league_data[fixture_league][away_team]["Away"]["For per Game"] * 1.25) * league_data[fixture_league][home_team]["Home"]["Against per Game"])
         
         if home_team_goals > home_team_max_goals:
             home_team_goals = int(home_team_max_goals)
@@ -405,6 +465,7 @@ def upcoming_fixture_predictions(fixtures, predictions, league_data):
             away_team_goals = int(away_team_max_goals)
         
         prediction_goal_separation = abs(home_team_goals - away_team_goals)
+        total_goals = home_team_goals + away_team_goals
         
         if home_team_goals > 0 and away_team_goals > 0:
             both_to_score = "Yes"
@@ -415,10 +476,9 @@ def upcoming_fixture_predictions(fixtures, predictions, league_data):
         prediction_description = "home_team_goals = int((home_team_avg_gpg_f * 1.25) * (away_team_avg_gpg_a) : away_team_goals = int((away_team_avg_gpg_f * 1.25) * (home_team_avg_gpg_a))"
         
         # Save current prediction as a list item        
-        prediction = {"League": league, "Date": fixture_date, "Time": fixture_time, "Prediction type": prediction_name, "Home team": home_team,
-        "Home team prediction": home_team_goals, "Away team": away_team, "Away team prediction": away_team_goals, 
-        "Predicted separation": prediction_goal_separation, "Both to score": both_to_score, "Home result": "",
-        "Away result": "", "Goal separation": "", "Both teams scored": ""}
+        prediction = {"League": fixture_league, "Date and time": fixture_datetime, "Prediction type": prediction_name, "Home team": home_team,
+        "Home team prediction": home_team_goals, "Away team": away_team, "Away team prediction": away_team_goals, "Total goals expected": total_goals, 
+        "Predicted separation": prediction_goal_separation, "Both to score": both_to_score, "date_as_dtobject": fixture[4]}
 
         # Flatten league stats for prediction storage and exporting
         for team in [home_team, away_team]: # Do for each team
@@ -426,10 +486,9 @@ def upcoming_fixture_predictions(fixtures, predictions, league_data):
                 h_a_stat_key = "Home Team"
             elif team == away_team:
                 h_a_stat_key = "Away Team"
-            league = get_league(team, league_data) # Get the team's league
             for section in ["Home", "Away", "Total"]: # Go through each set of stats
-                for stat in league_data[league][team][section]: # Add each stat and a descriptive key to the prediction dictionary
-                    prediction[h_a_stat_key + " " + section + " " + stat] = league_data[league][team][section][stat]
+                for stat in league_data[fixture_league][team][section]: # Add each stat and a descriptive key to the prediction dictionary
+                    prediction[h_a_stat_key + " " + section + " " + stat] = league_data[fixture_league][team][section][stat]
         
         prediction["Description"] = prediction_description
         
@@ -445,16 +504,75 @@ def upcoming_fixture_predictions(fixtures, predictions, league_data):
     # Return the new predictions list
     return predictions
     
-def prepare_prediction_dataframe(data):
+def get_predictions_in_range(predictions, game_range):
+    """
+    Takes the current predictions list and the currently selected game_range.
+    Returns a new list of predictions within the given game range.
+    """
+    today = datetime.today()
+    tomorrow = today + timedelta(days = 1)
+    teams = {}
+    predictions_in_range = []
+    for prediction in predictions:
+        if isinstance(game_range, timedelta):
+            # If game date within range, display the fixture.
+            if (prediction.get("date_as_dtobject", tomorrow) - today).days <= game_range.days - 1 or prediction["Date and time"] == "Manual entry: ":
+                """print("\n date ") # DEBUG CODE
+                print(game["date_as_dtobject"]) # DEBUG CODE
+                print() # DEBUG CODE"""
+                predictions_in_range.append(prediction)
+            
+    # If game_range is number of games
+    if isinstance(game_range, int):
+        # Create a dictionary of present teams and count the team's presence   
+        for prediction in predictions:
+            # Games that are manually entered do not count towards the game range limit.
+            # Only counting team appearances in games that are not manually entered.
+            if prediction["Date and time"] != "Manual entry: ":
+                teams[prediction["Home team"]] = teams.get(prediction["Home team"], 0) + 1
+                teams[prediction["Away team"]] = teams.get(prediction["Away team"], 0) + 1
+                if teams[prediction["Home team"]] <= game_range:
+                    # Set to display if the home team hasn't been displayed enough times yet.
+                    home_game_in_range = True
+
+                if teams[prediction["Away team"]] <= game_range:
+                    # Set to display if the away team hasn't been displayed enough times yet.
+                    away_game_in_range = True
+                
+                if home_game_in_range or away_game_in_range:
+                    predictions_in_range.append(prediction)
+                home_game_in_range, away_game_in_range = False, False
+            else:
+                # Ensure that the date_as_dtobject item is populated in manual entries when the game range is an int to prevent any unexpected errors later.
+                prediction["date_as_dtobject"] = tomorrow
+                predictions_in_range.append(prediction)
+    return predictions_in_range
+    
+def prepare_prediction_dataframe(predictions):
     """
     Takes the predictions list of prediction dictionaries.
     Returns an appropriately ordered Pandas dataframe
     """
+    # Create temporary copy of predictions dictionary without datetime object
+    # Can also be used to add or remove information to the spreadsheet.
+    temp_predictions = predictions.copy()
+    for prediction in temp_predictions:
+        prediction["Home result"] = ""
+        prediction["Away result"] = ""
+        prediction["Total goals scored"] = ""
+        prediction["Goal separation"] = ""
+        prediction["Both teams scored"] = ""
+        del prediction["date_as_dtobject"]
     
-    df = pd.DataFrame.from_dict(data)
-    df = df[["League", "Date", "Time", "Home team", "Away team", "Home team prediction",
-         "Away team prediction", "Predicted separation", "Both to score", "Home result",
-         "Away result", "Goal separation", "Both teams scored",
+    # Create the pandas dataframe object
+    df = pd.DataFrame.from_dict(temp_predictions)
+    df = df[[
+         "League", "Date and time", "Home team", "Away team", "Home team prediction",
+         "Away team prediction", "Total goals expected", "Predicted separation", 
+         "Both to score",
+         
+         "Home result", "Away result", "Total goals scored", "Goal separation", 
+         "Both teams scored",
 
          "Home Team Home Played",
          "Home Team Home Won", "Home Team Home Drew", "Home Team Home Lost",
@@ -499,4 +617,7 @@ def prepare_prediction_dataframe(data):
          "Away Team Total Points per Game",
 
          "Prediction type", "Description"]]
+         
+    # Delete temporary dictionary.
+    del temp_predictions
     return df

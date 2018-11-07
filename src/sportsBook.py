@@ -1,5 +1,7 @@
 from commonFunctions import is_number
 from footballMenu import football_menu
+from datetime import timedelta
+
 __author__ = "David Bristoll"
 __copyright__ = "Copyright 2018, David Bristoll"
 __maintainer__ = "David Bristoll"
@@ -36,7 +38,7 @@ def main_menu(options):
         while True:
             #print("Enter option: ") # Menu bypass
             selected = "1" # = input() - commented out as this is a placeholder menu 
-            #for development purposes and nedds not be shown at this stage.
+            #for development purposes and needs not be shown at this stage.
             
             # Quit option
             if selected.lower() == "q":
@@ -52,7 +54,11 @@ def main_menu(options):
             league_data = {}
             fixtures = []
             predictions = []
-            football_menu(league_data, fixtures, predictions)
+            filtered_predictions = []
+            predictions_in_range = {}
+            game_range = timedelta(7)
+            applied_filters = []
+            football_menu(league_data, fixtures, predictions, predictions_in_range, game_range, applied_filters, filtered_predictions)
         if selected == options[1][0]:
             tennis()
 
